@@ -3,6 +3,7 @@ from src.data.preprocessing.base.raw_data_extractor import RawDataExtractor
 from src.data.preprocessing.base.data_preprocessor import DataPreprocessor
 from src.data.preprocessing.base.data_cleaner import DataCleaner
 from src.data.preprocessing.augmentation.descriptor_merger import DescriptorMerger
+from sklearn.preprocessing import MinMaxScaler
 
 class Pipeline:    
     def __init__(self, num_cycle, test_inhibitor=None, norm_feat=False, use_wavelet=False):
@@ -49,6 +50,32 @@ class Pipeline:
             test_metadata = metadata_df[test_mask].reset_index(drop=True)
         else:
             self.test_voltage, self.test_current, test_metadata = None, None, None
+        
+        
+        # ========================= Scale signals =============================
+        self.vol_scaler = MinMaxScaler(feature_range=(-1, 1))
+        self.cur_scaler = MinMaxScaler(feature_range=(-1, 1))
+        
+        self.train_voltage = pd.DataFrame(
+            self.vol_scaler.fit_transform(self.train_voltage.values.reshape(-1, 1)).reshape(self.train_voltage.shape),
+            columns=self.train_voltage.columns
+        )
+        self.train_current = pd.DataFrame(
+            self.cur_scaler.fit_transform(self.train_current.values.reshape(-1, 1)).reshape(self.train_current.shape),
+            columns=self.train_current.columns
+        )
+        
+        if self.test_inhibitor:
+            self.test_voltage = pd.DataFrame(
+                self.vol_scaler.transform(self.test_voltage.values.reshape(-1, 1)).reshape(self.test_voltage.shape),
+                columns=self.test_voltage.columns
+            )
+            self.test_current = pd.DataFrame(
+                self.cur_scaler.transform(self.test_current.values.reshape(-1, 1)).reshape(self.test_current.shape),
+                columns=self.test_current.columns
+            )
+        else:
+            self.test_voltage, self.test_current = None, None
 
         # ============ STEP 5: Add descriptors ============
         merger = DescriptorMerger(normalize=norm_feat)
