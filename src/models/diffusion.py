@@ -54,7 +54,6 @@ class GaussianDiffusion(nn.Module):
         sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x_start.shape)
         sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
 
-        # Прыгаем сразу на шаг t
         return sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
 
     def forward(self, x_start: Tensor, descriptors: Tensor) -> Tensor:
@@ -71,8 +70,24 @@ class GaussianDiffusion(nn.Module):
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
         predicted_noise = self.model(signal=x_noisy, descriptors=descriptors, t=t)
+        
+        # mse loss between predicted noise and true noise
+        loss_noise = F.mse_loss(predicted_noise, noise)
+        
+        # phys loss (boundaries should be in [-1, 1])
+        sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x_start.shape)
+        sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
+        pred_x0 = (x_noisy - sqrt_one_minus_alphas_cumprod_t * predicted_noise) / sqrt_alphas_cumprod_t
+        out_of_bounds = F.relu(torch.abs(pred_x0) - 1.0)
+        loss_bounds = torch.mean(out_of_bounds)
 
-        return F.mse_loss(predicted_noise, noise)
+        # total var loss
+        diff = pred_x0[:, :, 1:] - pred_x0[:, :, :-1]
+        loss_tv = torch.mean(torch.abs(diff))
+
+        total_loss = loss_noise + 0.1 * loss_bounds + 0.05 * loss_tv
+
+        return total_loss
 
     @torch.no_grad()
     def p_sample(self, x, descriptors, t, t_index):

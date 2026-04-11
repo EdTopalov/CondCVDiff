@@ -2,48 +2,38 @@ from torch import nn
 import torch
 import torch.nn as nn
 
-from src.models.encoder import SSSDBlock
+from src.models.blocks import ResnetBlock1D, AttentionBlock1D
 
 
 class Decoder(nn.Module):
-    def __init__(self, base_channels=32):
+    def __init__(self, base_channels=64, time_dim=256):
         super().__init__()
-
-        self.up2 = nn.ConvTranspose1d(
-            in_channels=base_channels * 4,
-            out_channels=base_channels * 2,
-            kernel_size=4,
-            stride=2,
-            padding=1)
-        self.block2 = SSSDBlock(base_channels * 2, cond_dim=base_channels)
-
-        # Level 1
-        # Input: 64 channels | Output: 32 channels
-        self.up1 = nn.ConvTranspose1d(
-            in_channels=base_channels * 2,
-            out_channels=base_channels,
-            kernel_size=4,
-            stride=2,
-            padding=1
-        )
-        self.block1 = SSSDBlock(base_channels, cond_dim=base_channels)
-
-    def forward(self, x, skip1, skip2, gamma, beta, t_emb):
-        """
-        x: [B, 128, 242] - output from encoder
-        skip2: [B, 64, 484] - from 2 encoder level (saved signal)
-        skip1: [B, 32, 968] - from 1 encoder level (saved signal)
-        """
         
-        # Level 2
-        x = self.up2(x) # [B, 128, 242] -> [B, 64, 484]
-        x = x + skip2
-        x = self.block2(x, gamma, beta, t_emb)
+        self.up_pool3 = nn.ConvTranspose1d(base_channels * 4, base_channels * 3, kernel_size=4, stride=2, padding=1)
+        self.up3 = ResnetBlock1D(base_channels * 6, base_channels * 3, cond_dim=time_dim) # 3 from pooling + 3 from skip 
+        
+        # 242 -> 484
+        self.up_pool2 = nn.ConvTranspose1d(base_channels * 3, base_channels * 2, kernel_size=4, stride=2, padding=1)
+        self.up2 = ResnetBlock1D(base_channels * 4, base_channels * 2, cond_dim=time_dim) # 2+2
+        
+        #484 -> 968
+        self.up_pool1 = nn.ConvTranspose1d(base_channels * 2, base_channels, kernel_size=4, stride=2, padding=1)
+        self.up1 = ResnetBlock1D(base_channels * 2, base_channels, cond_dim=time_dim) # 1+1
 
-        # Level 1 
-        x = self.up1(x) # [B, 64, 484] -> [B, 32, 968]
-        x = x + skip1
-        x = self.block1(x, gamma, beta, t_emb)
 
+    def forward(self, x, skip1, skip2, skip3, cond):
+        
+        x = self.up_pool3(x)
+        x = torch.cat([x, skip3], dim=1)
+        x = self.up3(x, cond)
+        
+        x = self.up_pool2(x)
+        x = torch.cat([x, skip2], dim=1)
+        x = self.up2(x, cond)
+        
+        x = self.up_pool1(x)
+        x = torch.cat([x, skip1], dim=1)
+        x = self.up1(x, cond)
+        
         return x
 

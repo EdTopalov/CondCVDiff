@@ -9,24 +9,8 @@ import numpy as np
 from src.data.preprocessing.pipeline import Pipeline as P
 
 
-def setup_optimizer(model: nn.Module, lr=0.001, weight_decay=0.01, epochs=100):
-    """
-    Создает оптимизатор с особыми правилами для слоев S4.
-    Параметры S4 (матрицы A, B, C, dt) требуют маленького LR и нулевого Weight Decay.
-    """
-    all_parameters = list(model.parameters())
-
-    general_params = [p for p in all_parameters if not hasattr(p, "_optim")]
-    
-    optimizer = optim.AdamW(general_params, lr=lr, weight_decay=weight_decay)
-
-    hps = [getattr(p, "_optim") for p in all_parameters if hasattr(p, "_optim")]
-    hps = [dict(s) for s in sorted(list(dict.fromkeys(frozenset(hp.items()) for hp in hps)))]
-    
-    for hp in hps:
-        params = [p for p in all_parameters if getattr(p, "_optim", None) == hp]
-        optimizer.add_param_group({"params": params, **hp})
-
+def setup_optimizer(model: nn.Module, lr=0.0009, weight_decay=1e-4, epochs=100):
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     return optimizer, scheduler
@@ -66,7 +50,7 @@ class DiffusionTrainer:
         
         for batch in pbar:
             signal = batch["signal_1d"].to(self.device)  # [B, 2, 968]
-            features = batch["features"].to(self.device) # [B, 41] (или 43)
+            features = batch["features"].to(self.device) # [B, 43]
             
             self.optimizer.zero_grad()
             
@@ -119,7 +103,7 @@ class DiffusionTrainer:
 
             self.scheduler.step()
             
-            if epoch % 10 == 0 or epoch == epochs:
+            if epoch % 2 == 0 or epoch == epochs:
                 self.diffusion.eval()
                 with torch.no_grad():
                     # generates from noise shape=(1, 2, 968)
