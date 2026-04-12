@@ -11,11 +11,11 @@ class Decoder(nn.Module):
         
         self.up_pool3 = nn.ConvTranspose1d(base_channels * 4, base_channels * 3, kernel_size=4, stride=2, padding=1)
         self.up3 = ResnetBlock1D(base_channels * 6, base_channels * 3, cond_dim=time_dim) # 3 from pooling + 3 from skip 
-        
+
         # 242 -> 484
         self.up_pool2 = nn.ConvTranspose1d(base_channels * 3, base_channels * 2, kernel_size=4, stride=2, padding=1)
         self.up2 = ResnetBlock1D(base_channels * 4, base_channels * 2, cond_dim=time_dim) # 2+2
-        
+
         #484 -> 968
         self.up_pool1 = nn.ConvTranspose1d(base_channels * 2, base_channels, kernel_size=4, stride=2, padding=1)
         self.up1 = ResnetBlock1D(base_channels * 2, base_channels, cond_dim=time_dim) # 1+1
