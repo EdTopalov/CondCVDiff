@@ -15,8 +15,6 @@ descriptors_name = ['MolWt', 'MolLogP', 'NumRotatableBonds', 'TPSA',
 
 class CVADataset(Dataset):
     def __init__(self, vol, cur, desc_df):
-        
-
         v_df = vol.reset_index(drop=True)
         c_df = cur.reset_index(drop=True)
         d_df = desc_df.reset_index(drop=True)
@@ -28,18 +26,17 @@ class CVADataset(Dataset):
         v_array = v_clean.astype("float32").values
         c_array = c_clean.astype("float32").values
         
-        self.signal_2ch = np.stack((v_array, c_array), axis=1)
-        
-        self.desc = d_df[descriptors_name].astype("float32").values
-        self.signal_tensor = torch.tensor(self.signal_2ch, dtype=torch.float32)
-        self.desc_tensor = torch.tensor(self.desc, dtype=torch.float32)
+        self.vol_tensor = torch.tensor(v_array, dtype=torch.float32).unsqueeze(1)
+        self.cur_tensor = torch.tensor(c_array, dtype=torch.float32).unsqueeze(1)
+        self.desc_tensor = torch.tensor(d_df[descriptors_name].astype("float32").values, dtype=torch.float32)
 
     def __len__(self):
-        return len(self.signal_tensor)
+        return len(self.cur_tensor)
 
     def __getitem__(self, idx):
         return {
-            "signal_1d": self.signal_tensor[idx],
+            "voltage": self.vol_tensor[idx],
+            "current": self.cur_tensor[idx],
             "features": self.desc_tensor[idx]
         }
     

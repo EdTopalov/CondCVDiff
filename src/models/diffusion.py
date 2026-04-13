@@ -85,9 +85,13 @@ class GaussianDiffusion(nn.Module):
         diff = pred_x0[:, :, 1:] - pred_x0[:, :, :-1]
         loss_tv = torch.mean(torch.abs(diff))
 
-        total_loss = loss_noise + 0.1 * loss_bounds + 0.05 * loss_tv
+        # gradient Loss
+        true_grad = x_start[:, :, 1:] - x_start[:, :, :-1]
+        loss_gradient = F.mse_loss(diff, true_grad)
 
-        return total_loss
+        total_loss = loss_noise + 0.1 * loss_bounds + 0.05 * loss_gradient
+
+        return total_loss, loss_noise, loss_bounds, loss_tv
 
     @torch.no_grad()
     def p_sample(self, x, descriptors, t, t_index):

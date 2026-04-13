@@ -10,7 +10,7 @@ class DiffusionAttn(nn.Module):
     """
     Predicts added noise from noisy signal, desc and timestep.
     """
-    def __init__(self, in_channels=2, desc_features=43, base_channels=64):
+    def __init__(self, in_channels=1, desc_features=43, base_channels=64):
         super().__init__()
         
         time_dim = base_channels * 4
@@ -29,7 +29,7 @@ class DiffusionAttn(nn.Module):
 
     def forward(self, signal, descriptors, t):
         """
-        signal: [B, 2, 968] signal with noise (x_t)
+        signal: [B, 1, 968] signal with noise (x_t)
         descriptors: [B, 43] 
         t: [B] - diffusion step (from 0 to T)
         """
