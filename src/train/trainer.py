@@ -87,7 +87,7 @@ class DiffusionTrainer:
             signal = batch["current"].to(self.device)
             features = batch["features"].to(self.device)
             
-            loss, _, _, _ = self.diffusion(x_start=signal, descriptors=features)
+            loss, *_ = self.diffusion(x_start=signal, descriptors=features)
             
             total_loss += loss.item()
             pbar.set_postfix({"val_loss": f"{loss.item():.4f}"})

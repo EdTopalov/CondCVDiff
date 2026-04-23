@@ -69,45 +69,33 @@ class GaussianDiffusion(nn.Module):
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-        predicted_noise = self.model(signal=x_noisy, descriptors=descriptors, t=t)
+        predicted_x0 = self.model(signal=x_noisy, descriptors=descriptors, t=t)
         
         # mse loss between predicted noise and true noise
-        loss_noise = F.mse_loss(predicted_noise, noise)
+        loss_cur = F.mse_loss(predicted_x0, x_start)
         
-        # phys loss (boundaries should be in [-1, 1])
-        sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x_start.shape)
-        sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
-        pred_x0 = (x_noisy - sqrt_one_minus_alphas_cumprod_t * predicted_noise) / sqrt_alphas_cumprod_t
-        out_of_bounds = F.relu(torch.abs(pred_x0) - 1.0)
+        out_of_bounds = F.relu(torch.abs(predicted_x0) - 1.0)
         loss_bounds = torch.mean(out_of_bounds)
 
-        # total var loss
-        diff = pred_x0[:, :, 1:] - pred_x0[:, :, :-1]
+        # TV Loss
+        diff = predicted_x0[:, :, 1:] - predicted_x0[:, :, :-1]
         loss_tv = torch.mean(torch.abs(diff))
 
-        # gradient Loss
+        # gradient loss
         true_grad = x_start[:, :, 1:] - x_start[:, :, :-1]
         loss_gradient = F.mse_loss(diff, true_grad)
 
-        total_loss = loss_noise + 0.1 * loss_bounds + 0.05 * loss_gradient
+        total_loss = loss_cur
 
-        return total_loss, loss_noise, loss_bounds, loss_tv
+        return total_loss, loss_cur, loss_bounds, loss_tv
 
     @torch.no_grad()
     def p_sample(self, x, descriptors, t, t_index):
         """
         One step of backward process with Channel-wise Clipping.
         """
-        betas_t = extract(self.betas, t, x.shape)
-        sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x.shape)
-        sqrt_recip_alphas_t = extract(torch.sqrt(1.0 / (1.0 - self.betas)), t, x.shape)
-        
-        predicted_noise = self.model(signal=x, descriptors=descriptors, t=t)
-        
-        sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x.shape)
-        pred_x0 = (x - sqrt_one_minus_alphas_cumprod_t * predicted_noise) / sqrt_alphas_cumprod_t
-        
-        pred_x0.clamp_(-1.0, 1.0)
+        pred_x0 = self.model(signal=x, descriptors=descriptors, t=t)
+        pred_x0.clamp_(-1.5, 1.5)
         
         posterior_mean_coef1 = extract(self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod), t, x.shape)
         posterior_mean_coef2 = extract((1. - self.alphas_cumprod_prev) * torch.sqrt(1. - self.betas) / (1. - self.alphas_cumprod), t, x.shape)
@@ -124,16 +112,21 @@ class GaussianDiffusion(nn.Module):
     @torch.no_grad()
     def sample(self, descriptors, shape):
         """
-        Full generation from scratch (Inference).
-        shape: (batch_size, 2, 968)
+        Inference: предсказание чистого тока из шума.
+        shape: (batch_size, 1, 968)
         """
         device = next(self.model.parameters()).device
         b = shape[0]
         
-        img = torch.randn(shape, device=device)
+        current_img = torch.randn(shape, device=device)
         
-        for i in tqdm(reversed(range(0, self.timesteps)), desc='Sampling', total=self.timesteps):
+        for i in tqdm(reversed(range(0, self.timesteps)), desc='Sampling', total=self.timesteps, leave=False):
             t = torch.full((b,), i, device=device, dtype=torch.long)
-            img = self.p_sample(img, descriptors, t, i)
-            
-        return img
+            current_img = self.p_sample(
+                x=current_img, 
+                descriptors=descriptors, 
+                t=t, 
+                t_index=i
+            )
+                        
+        return current_img

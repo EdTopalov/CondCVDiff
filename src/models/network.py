@@ -48,6 +48,6 @@ class DiffusionAttn(nn.Module):
         
         h_dec = self.out_norm(h_dec)
         h_dec = F.silu(h_dec)
-        pred_noise = self.out_proj(h_dec)         
+        pred_current = self.out_proj(h_dec)         
         
-        return pred_noise
+        return pred_current
