@@ -2,7 +2,26 @@ import torch
 import torch.nn as nn
 import numpy as np
 from src.models.S4 import S4Block as S4
+import torch.nn.functional as F
 
+
+class AttentionBlock1D(nn.Module):
+    """Self-Attention with QKV"""
+    def __init__(self, channels):
+        super().__init__()
+        self.norm = nn.GroupNorm(8, channels) 
+        self.qkv = nn.Conv1d(channels, channels * 3, kernel_size=1)
+        self.proj = nn.Conv1d(channels, channels, kernel_size=1)
+
+    def forward(self, x):
+        B, C, L = x.shape
+        qkv = self.qkv(self.norm(x)).reshape(B, 3, C, L)
+        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]
+        # Scaled dot-product attention
+        attn = torch.einsum("bcl,bcs->bls", q, k) * (C ** -0.5)
+        attn = F.softmax(attn, dim=-1)
+        out = torch.einsum("bls,bcs->bcl", attn, v)
+        return x + self.proj(out)
 
 class SSSDBlock(nn.Module):
     """Layer Norm → S4 → FiLM → SiLU → Projection + Residual"""
@@ -64,6 +83,7 @@ class Encoder(nn.Module):
         self.down2 = nn.Conv1d(base_channels * 2, base_channels * 4, kernel_size=4, stride=2, padding=1)
         
         self.bottleneck1 = SSSDBlock(base_channels * 4, cond_dim=base_channels)
+        self.attn = AttentionBlock1D(base_channels * 4)
         self.bottleneck2 = SSSDBlock(base_channels * 4, cond_dim=base_channels)
 
     def forward(self, x, gamma, beta, t_emb):
@@ -81,6 +101,7 @@ class Encoder(nn.Module):
         
         # [B, 128, 242]
         x = self.bottleneck1(x, gamma, beta, t_emb)
+        #x = self.attn(x)
         x = self.bottleneck2(x, gamma, beta, t_emb)
         
         return x, skip1, skip2

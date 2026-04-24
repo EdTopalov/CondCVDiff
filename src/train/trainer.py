@@ -65,12 +65,12 @@ class DiffusionTrainer:
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
         
         for batch in pbar:
-            signal = batch["signal_1d"].to(self.device)  # [B, 2, 968]
+            current = batch["current"].to(self.device)  # [B, 1, 968]
             features = batch["features"].to(self.device) # [B, 41] (или 43)
             
             self.optimizer.zero_grad()
             
-            loss = self.diffusion(x_start=signal, descriptors=features)
+            loss = self.diffusion(x_start=current, descriptors=features)
             
             loss.backward()
             
@@ -91,10 +91,10 @@ class DiffusionTrainer:
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch} [Val]")
         
         for batch in pbar:
-            signal = batch["signal_1d"].to(self.device)
+            current = batch["current"].to(self.device)
             features = batch["features"].to(self.device)
             
-            loss = self.diffusion(x_start=signal, descriptors=features)
+            loss = self.diffusion(x_start=current, descriptors=features)
             
             total_loss += loss.item()
             pbar.set_postfix({"val_loss": f"{loss.item():.4f}"})
@@ -107,7 +107,8 @@ class DiffusionTrainer:
         val_losses_history = []
         
         fixed_batch = next(iter(self.val_loader))
-        fixed_signal = fixed_batch["signal_1d"][0:1].to(self.device) # 1st element of the batch, shape: [1, 2, 968]
+        fixed_current = fixed_batch["current"][0:1].to(self.device) # 1st element of the batch, shape: [1, 1, 968]
+        fixed_voltage = fixed_batch["voltage"][0:1].to(self.device) # [1, 1, 968]
         fixed_features = fixed_batch["features"][0:1].to(self.device)
         
         for epoch in range(1, epochs + 1):
@@ -119,31 +120,28 @@ class DiffusionTrainer:
 
             self.scheduler.step()
             
-            if epoch % 10 == 0 or epoch == epochs:
+            if epoch % 2 == 0 or epoch == epochs:
                 self.diffusion.eval()
                 with torch.no_grad():
                     # generates from noise shape=(1, 2, 968)
-                    gen_signal = self.diffusion.sample(
+                    gen_current = self.diffusion.sample(
                         descriptors=fixed_features, 
-                        shape=(1, 2, fixed_signal.shape[-1])
+                        shape=(1, 1, fixed_current.shape[-1])
                     )
                 
                 plots_dir = os.path.join(self.save_dir, "plots")
                 os.makedirs(plots_dir, exist_ok=True)
                 
-                gen_vol_norm = gen_signal[0, 0, :].cpu().numpy()
-                gen_cur_norm = gen_signal[0, 1, :].cpu().numpy()
-                orig_vol_norm = fixed_signal[0, 0, :].cpu().numpy()
-                orig_cur_norm = fixed_signal[0, 1, :].cpu().numpy()
+                gen_cur_norm = gen_current[0, 0, :].cpu().numpy()
+                orig_vol_norm = fixed_voltage[0, 0, :].cpu().numpy()
+                orig_cur_norm = fixed_current[0, 0, :].cpu().numpy()
 
-
-                gen_vol_real = self.vol_scaler.inverse_transform(gen_vol_norm.reshape(-1, 1)).flatten()
                 gen_cur_real = self.cur_scaler.inverse_transform(gen_cur_norm.reshape(-1, 1)).flatten()
+                orig_cur_real = self.cur_scaler.inverse_transform(orig_cur_norm.reshape(-1, 1)).flatten()
 
                 orig_vol_real = self.vol_scaler.inverse_transform(orig_vol_norm.reshape(-1, 1)).flatten()
-                orig_cur_real = self.cur_scaler.inverse_transform(orig_cur_norm.reshape(-1, 1)).flatten()
-                
-                gen_signal_real = np.stack([gen_vol_real, gen_cur_real])
+
+                gen_signal_real = np.stack([orig_vol_real, gen_cur_real])
                 orig_signal_real = np.stack([orig_vol_real, orig_cur_real])
 
                 plot_training_metrics(

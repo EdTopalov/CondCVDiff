@@ -54,7 +54,6 @@ class GaussianDiffusion(nn.Module):
         sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x_start.shape)
         sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
 
-        # Прыгаем сразу на шаг t
         return sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
 
     def forward(self, x_start: Tensor, descriptors: Tensor) -> Tensor:
@@ -70,29 +69,25 @@ class GaussianDiffusion(nn.Module):
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-        predicted_noise = self.model(signal=x_noisy, descriptors=descriptors, t=t)
+        predicted_current = self.model(signal=x_noisy, descriptors=descriptors, t=t)
 
-        return F.mse_loss(predicted_noise, noise)
+        return F.mse_loss(predicted_current, x_start)
 
     @torch.no_grad()
     def p_sample(self, x, descriptors, t, t_index):
-        """
-        One step of backward process with Channel-wise Clipping.
-        """
-        betas_t = extract(self.betas, t, x.shape)
-        sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x.shape)
-        sqrt_recip_alphas_t = extract(torch.sqrt(1.0 / (1.0 - self.betas)), t, x.shape)
-        
-        predicted_noise = self.model(signal=x, descriptors=descriptors, t=t)
-        
-        sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x.shape)
-        pred_x0 = (x - sqrt_one_minus_alphas_cumprod_t * predicted_noise) / sqrt_alphas_cumprod_t
-        
-        pred_x0.clamp_(-1.0, 1.0)
-        
-        posterior_mean_coef1 = extract(self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod), t, x.shape)
-        posterior_mean_coef2 = extract((1. - self.alphas_cumprod_prev) * torch.sqrt(1. - self.betas) / (1. - self.alphas_cumprod), t, x.shape)
-        
+        pred_x0 = self.model(signal=x, descriptors=descriptors, t=t)
+
+        pred_x0.clamp_(-1.5, 1.5)
+
+        posterior_mean_coef1 = extract(
+            self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod),
+            t, x.shape
+        )
+        posterior_mean_coef2 = extract(
+            (1. - self.alphas_cumprod_prev) * torch.sqrt(1. - self.betas) / (1. - self.alphas_cumprod),
+            t, x.shape
+        )
+
         model_mean = posterior_mean_coef1 * pred_x0 + posterior_mean_coef2 * x
 
         if t_index == 0:

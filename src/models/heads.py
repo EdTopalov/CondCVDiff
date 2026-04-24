@@ -4,7 +4,7 @@ import math
 
 class SignalHead(nn.Module):
     """Input of 1D signal (voltage + current)"""
-    def __init__(self, in_channels=2, out_channels=32):
+    def __init__(self, in_channels=1, out_channels=32):
         super().__init__()
         # Point conv (kernel=1), without mixing neighbour pos
         self.proj = nn.Conv1d(in_channels, out_channels, kernel_size=1)

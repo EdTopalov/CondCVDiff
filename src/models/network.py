@@ -9,7 +9,7 @@ class DiffusionSSSD(nn.Module):
     """
     Predicts added noise from noisy signal, desc and timestep.
     """
-    def __init__(self, in_channels=2, desc_features=43, base_channels=32):
+    def __init__(self, in_channels=1, desc_features=43, base_channels=32):
         super().__init__()
         
         self.signal_head = SignalHead(in_channels=in_channels, out_channels=base_channels)
@@ -34,6 +34,6 @@ class DiffusionSSSD(nn.Module):
         
         h_dec = self.decoder(bottleneck_out, skip1, skip2, gamma, beta, t_base)
         
-        pred_noise = self.out_proj(h_dec)         # [B, 2, 968]
+        pred_noise = self.out_proj(h_dec)         # [B, 1, 968]
         
         return pred_noise
