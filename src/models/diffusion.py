@@ -3,15 +3,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 from torch import Tensor
+import math
 
-def linear_beta_schedule(timesteps: int) -> Tensor:
+def cosine_beta_schedule(timesteps: int, s=0.008) -> Tensor:
     """
-    Linear schedule 
-    Beta confirms, how much noise will be added in each step.
+    Cosine schedule (proposed in Improved DDPM). 
+    It gradually adds noise at the start, preserving the signal structure for a longer time.
     """
-    beta_start = 0.0001
-    beta_end = 0.02
-    return torch.linspace(beta_start, beta_end, timesteps)
+    steps = timesteps + 1
+    x = torch.linspace(0, timesteps, steps)
+    alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0.0001, 0.999)
 
 def extract(a: Tensor, t: Tensor, x_shape: tuple) -> Tensor:
     """
@@ -28,7 +32,7 @@ class GaussianDiffusion(nn.Module):
         self.model = model
         self.timesteps = timesteps
 
-        betas = linear_beta_schedule(timesteps)
+        betas = cosine_beta_schedule(timesteps)
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas, axis=0)
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
@@ -77,24 +81,23 @@ class GaussianDiffusion(nn.Module):
         out_of_bounds = F.relu(torch.abs(predicted_x0) - 1.0)
         loss_bounds = torch.mean(out_of_bounds)
 
-        # TV Loss
-        diff = predicted_x0[:, :, 1:] - predicted_x0[:, :, :-1]
-        loss_tv = torch.mean(torch.abs(diff))
-
-        # gradient loss
-        true_grad = x_start[:, :, 1:] - x_start[:, :, :-1]
-        loss_gradient = F.mse_loss(diff, true_grad)
-
         total_loss = loss_cur
 
-        return total_loss, loss_cur, loss_bounds, loss_tv
+        return total_loss, loss_cur, loss_bounds
 
     @torch.no_grad()
-    def p_sample(self, x, descriptors, t, t_index):
+    def p_sample(self, x, descriptors, t, t_index, guidance_scale=3.0):
         """
         One step of backward process with Channel-wise Clipping.
         """
-        pred_x0 = self.model(signal=x, descriptors=descriptors, t=t)
+        if guidance_scale > 1.0:
+            pred_x0_cond = self.model(signal=x, descriptors=descriptors, t=t)
+            uncond_descriptors = torch.zeros_like(descriptors)
+            pred_x0_uncond = self.model(signal=x, descriptors=uncond_descriptors, t=t)
+            pred_x0 = pred_x0_uncond + guidance_scale * (pred_x0_cond - pred_x0_uncond)
+        else:
+            pred_x0 = self.model(signal=x, descriptors=descriptors, t=t)
+
         pred_x0.clamp_(-1.5, 1.5)
         
         posterior_mean_coef1 = extract(self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod), t, x.shape)
@@ -110,7 +113,7 @@ class GaussianDiffusion(nn.Module):
             return model_mean + torch.sqrt(posterior_variance_t) * noise
 
     @torch.no_grad()
-    def sample(self, descriptors, shape):
+    def sample(self, descriptors, shape, guidance_scale=3.0):
         """
         Inference: предсказание чистого тока из шума.
         shape: (batch_size, 1, 968)
@@ -126,7 +129,8 @@ class GaussianDiffusion(nn.Module):
                 x=current_img, 
                 descriptors=descriptors, 
                 t=t, 
-                t_index=i
+                t_index=i,
+                guidance_scale=guidance_scale
             )
                         
         return current_img

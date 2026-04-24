@@ -54,7 +54,9 @@ class DiffusionTrainer:
         for batch in pbar:
             signal = batch["current"].to(self.device)  # [B, 1, 968]
             features = batch["features"].to(self.device) # [B, 43]
-            
+            if torch.rand(1).item() < 0.1:
+                features = torch.zeros_like(features)
+
             self.optimizer.zero_grad()
             
             loss, loss_noise, loss_bounds, loss_tv = self.diffusion(x_start=signal, descriptors=features)
@@ -65,9 +67,6 @@ class DiffusionTrainer:
             
             self.optimizer.step()
             
-
-
-
             total_loss += loss.item()
             total_noise_loss += loss_noise.item()
             total_bounds_loss += loss_bounds.item()
@@ -119,7 +118,8 @@ class DiffusionTrainer:
                     # generates from noise shape=(1, 2, 968)
                     gen_current = self.diffusion.sample(
                         descriptors=fixed_features, 
-                        shape=(1, 1, fixed_current.shape[-1])
+                        shape=(1, 1, fixed_current.shape[-1]), 
+                        guidance_scale=1.5
                     )
                 
                 plots_dir = os.path.join(self.save_dir, "plots")
