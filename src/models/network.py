@@ -9,17 +9,27 @@ class DiffusionSSSD(nn.Module):
     """
     Predicts added noise from noisy signal, desc and timestep.
     """
-    def __init__(self, in_channels=1, desc_features=43, base_channels=32):
+    def __init__(self, in_channels, desc_features, base_channels):
         super().__init__()
         
         self.signal_head = SignalHead(in_channels=in_channels, out_channels=base_channels)
         self.desc_head = DescriptorHead(in_features=desc_features, out_dim=base_channels)
-        self.time_head = TimeEmbedding(base_dim=128, out_dim=128) 
+        self.time_head = TimeEmbedding(base_dim=base_channels, out_dim=base_channels * 4)
         
-        self.encoder = Encoder(base_channels=base_channels)
-        self.decoder = Decoder(base_channels=base_channels)
+        self.pos_emb_enc = nn.Parameter(torch.randn(1, base_channels, 968) * 0.02)  # Learnable positional embeddings
+        self.pos_emb_dec = nn.Parameter(torch.randn(1, base_channels, 968) * 0.02)
+        self.pos_emb_enc_1 = nn.Embedding
+        self.encoder = Encoder(base_channels=base_channels, t_dim=base_channels * 4)
+        self.decoder = Decoder(base_channels=base_channels, t_dim=base_channels * 4)
         
-        self.out_proj = nn.Conv1d(base_channels, in_channels, kernel_size=5, padding=2)
+        
+        
+        self.out_proj = nn.Sequential(
+            nn.Conv1d(base_channels, base_channels // 2, kernel_size=3, padding=1),
+            nn.SiLU(),
+            nn.Conv1d(base_channels // 2, in_channels, kernel_size=1)
+        )
+
     def forward(self, signal, descriptors, t):
         """
         signal: [B, 2, 968] signal with noise (x_t)
@@ -27,6 +37,9 @@ class DiffusionSSSD(nn.Module):
         t: [B] - diffusion step (from 0 to T)
         """
         h = self.signal_head(signal)              # [B, 32, 968]
+        
+        h += self.pos_emb_enc  # Add positional embeddings
+        
         gamma, beta = self.desc_head(descriptors) # [B, 32], [B, 32]
         t_base = self.time_head(t)                # [B, 128]
         
@@ -34,6 +47,7 @@ class DiffusionSSSD(nn.Module):
         
         h_dec = self.decoder(bottleneck_out, skip1, skip2, gamma, beta, t_base)
         
-        pred_noise = self.out_proj(h_dec)         # [B, 1, 968]
+        h_dec = h_dec + self.pos_emb_dec
+        pred_signal = self.out_proj(h_dec)   # [B, 1, 968]
         
-        return pred_noise
+        return pred_signal

@@ -8,26 +8,64 @@ from src.utils.plots import plot_training_metrics, plot_cv_reconstruction
 import numpy as np
 from src.data.preprocessing.pipeline import Pipeline as P
 
+class EMA:
+    def __init__(self, model, beta=0.70):
+        self.beta = beta
+        self.step = 0
+        self.shadow = {}
+        self.backup = {}
+        
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
 
-def setup_optimizer(model: nn.Module, lr=0.001, weight_decay=0.01, epochs=100):
+    def update(self, model):
+        self.step += 1
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                new_average = (1.0 - self.beta) * param.data + self.beta * self.shadow[name]
+                self.shadow[name] = new_average.clone()
+
+    def apply_shadow(self, model):
+        """Подменяет веса модели на сглаженные (для генерации и валидации)"""
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                self.backup[name] = param.data
+                param.data = self.shadow[name]
+
+    def restore(self, model):
+        """Возвращает дерганые веса обратно (для продолжения обучения)"""
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
+
+def setup_optimizer(model: nn.Module, lr, weight_decay, epochs):
     """
     Создает оптимизатор с особыми правилами для слоев S4.
     Параметры S4 (матрицы A, B, C, dt) требуют маленького LR и нулевого Weight Decay.
     """
-    all_parameters = list(model.parameters())
+    s4_params = []
+    other_params = []
 
-    general_params = [p for p in all_parameters if not hasattr(p, "_optim")]
-    
-    optimizer = optim.AdamW(general_params, lr=lr, weight_decay=weight_decay)
+    for name, p in model.named_parameters():
+        if 's4' in name:
+            s4_params.append(p)
+        else:
+            other_params.append(p)
 
-    hps = [getattr(p, "_optim") for p in all_parameters if hasattr(p, "_optim")]
-    hps = [dict(s) for s in sorted(list(dict.fromkeys(frozenset(hp.items()) for hp in hps)))]
-    
-    for hp in hps:
-        params = [p for p in all_parameters if getattr(p, "_optim", None) == hp]
-        optimizer.add_param_group({"params": params, **hp})
+    optimizer = optim.AdamW([
+        {'params': other_params, 'lr': lr, 'weight_decay': weight_decay},
+        {'params': s4_params, 'lr': 0.0006, 'weight_decay': 0.0}
+    ])
 
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    for i, group in enumerate(optimizer.param_groups):
+        print(f"Group {i}: lr={group['lr']}, weight_decay={group.get('weight_decay')}, params={sum(p.numel() for p in group['params'])}")
 
     return optimizer, scheduler
 
@@ -54,6 +92,7 @@ class DiffusionTrainer:
         self.save_dir = save_dir
         self.vol_scaler = vol_scaler
         self.cur_scaler = cur_scaler
+        self.ema = EMA(self.diffusion, beta=0.995)
         
         os.makedirs(self.save_dir, exist_ok=True)
         self.best_val_loss = float('inf')
@@ -61,6 +100,11 @@ class DiffusionTrainer:
     def train_epoch(self, epoch):
         self.diffusion.train()
         total_loss = 0.0
+        total_mse = 0.0
+        total_area = 0.0
+        total_ratio = 0.0
+        total_peaks = 0.0
+        
         
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
         
@@ -68,20 +112,33 @@ class DiffusionTrainer:
             current = batch["current"].to(self.device)  # [B, 1, 968]
             features = batch["features"].to(self.device) # [B, 41] (или 43)
             
+            features = features + torch.randn_like(features) * 0.03
+
+            if torch.rand(1).item() < 0.15:
+                features = torch.zeros_like(features)
+            
             self.optimizer.zero_grad()
             
-            loss = self.diffusion(x_start=current, descriptors=features)
+            loss_mse, loss_area, loss_ratio, loss_peaks = self.diffusion(x_start=current, descriptors=features, epoch=epoch)
+            full_loss = loss_mse + loss_area + loss_ratio + loss_peaks
             
-            loss.backward()
+            full_loss.backward()
             
             torch.nn.utils.clip_grad_norm_(self.diffusion.parameters(), max_norm=1.0)
             
             self.optimizer.step()
             
-            total_loss += loss.item()
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            self.ema.update(self.diffusion)
             
-        return total_loss / len(self.train_loader)
+            total_loss += full_loss.item()
+            total_mse += loss_mse.item()
+            total_area += loss_area.item()
+            total_ratio += loss_ratio.item()
+            total_peaks += loss_peaks.item()
+            
+            pbar.set_postfix({"loss": f"{full_loss.item():.4f}"})
+            
+        return total_loss / len(self.train_loader), total_mse/len(self.train_loader), total_area/len(self.train_loader), total_ratio/len(self.train_loader), total_peaks/len(self.train_loader)
 
     @torch.no_grad()
     def val_epoch(self, epoch):
@@ -94,10 +151,11 @@ class DiffusionTrainer:
             current = batch["current"].to(self.device)
             features = batch["features"].to(self.device)
             
-            loss = self.diffusion(x_start=current, descriptors=features)
+            loss_mse_val, loss_area_val, loss_ratio_val, loss_peaks_val = self.diffusion(x_start=current, descriptors=features, epoch=epoch)
+            sum_loss = loss_mse_val + loss_area_val + loss_ratio_val + loss_peaks_val
             
-            total_loss += loss.item()
-            pbar.set_postfix({"val_loss": f"{loss.item():.4f}"})
+            total_loss += sum_loss.item()
+            pbar.set_postfix({"val_loss": f"{sum_loss.item():.4f}"})
             
         return total_loss / len(self.val_loader)
 
@@ -112,7 +170,9 @@ class DiffusionTrainer:
         fixed_features = fixed_batch["features"][0:1].to(self.device)
         
         for epoch in range(1, epochs + 1):
-            train_loss = self.train_epoch(epoch)
+            
+            train_loss, train_mse_loss, train_area_loss, train_ratio_loss, train_peaks_loss = self.train_epoch(epoch)
+            self.ema.apply_shadow(self.diffusion)
             val_loss = self.val_epoch(epoch)
             
             train_losses_history.append(train_loss)
@@ -120,7 +180,7 @@ class DiffusionTrainer:
 
             self.scheduler.step()
             
-            if epoch % 2 == 0 or epoch == epochs:
+            if epoch % 1 == 0 or epoch == epochs:
                 self.diffusion.eval()
                 with torch.no_grad():
                     # generates from noise shape=(1, 2, 968)
@@ -136,11 +196,10 @@ class DiffusionTrainer:
                 orig_vol_norm = fixed_voltage[0, 0, :].cpu().numpy()
                 orig_cur_norm = fixed_current[0, 0, :].cpu().numpy()
 
-                gen_cur_real = self.cur_scaler.inverse_transform(gen_cur_norm.reshape(-1, 1)).flatten()
-                orig_cur_real = self.cur_scaler.inverse_transform(orig_cur_norm.reshape(-1, 1)).flatten()
-
-                orig_vol_real = self.vol_scaler.inverse_transform(orig_vol_norm.reshape(-1, 1)).flatten()
-
+                gen_cur_real = self.cur_scaler.inverse_transform((gen_cur_norm / 0.8).reshape(-1, 1)).flatten()
+                orig_cur_real = self.cur_scaler.inverse_transform((orig_cur_norm / 0.8).reshape(-1, 1)).flatten()
+                orig_vol_real = self.vol_scaler.inverse_transform((orig_vol_norm / 0.8).reshape(-1, 1)).flatten()
+                
                 gen_signal_real = np.stack([orig_vol_real, gen_cur_real])
                 orig_signal_real = np.stack([orig_vol_real, orig_cur_real])
 
@@ -159,13 +218,15 @@ class DiffusionTrainer:
                 )
 
             current_lr = self.scheduler.get_last_lr()[0]
-            print(f"Epoch {epoch} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | LR: {current_lr:.6f}")
+            print(f"Epoch {epoch} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | LR: {current_lr:.6f} | MSE_loss {train_mse_loss:.6f} | area_loss {train_area_loss:.6f} | ratio_loss {train_ratio_loss:.6f} | peaks_loss {train_peaks_loss:.6f}")
             
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.save_checkpoint("best_model.pth", epoch, val_loss)
                 print(f"Saved best model (Val Loss: {val_loss:.4f})")
-                
+            self.ema.restore(self.diffusion)
+        
+        self.ema.apply_shadow(self.diffusion)
         self.save_checkpoint("last_model.pth", epochs, val_loss)
 
     def save_checkpoint(self, filename, epoch, val_loss):

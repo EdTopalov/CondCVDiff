@@ -3,20 +3,29 @@ import torch.nn as nn
 import math
 
 class SignalHead(nn.Module):
-    """Input of 1D signal (voltage + current)"""
-    def __init__(self, in_channels=1, out_channels=32):
+    def __init__(self, in_channels=1, out_channels=64):
         super().__init__()
-        # Point conv (kernel=1), without mixing neighbour pos
-        self.proj = nn.Conv1d(in_channels, out_channels, kernel_size=1)
+        hidden = out_channels // 2
+        self.conv1 = nn.Conv1d(in_channels, hidden, 3, padding=1)
+        self.norm1 = nn.GroupNorm(1, hidden)
+        self.act1 = nn.SiLU()
+
+        self.conv2 = nn.Conv1d(hidden, out_channels, 3, padding=1)
+        self.norm2 = nn.GroupNorm(1, out_channels)
+        self.act2 = nn.SiLU()
+
+        self.skip = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
 
     def forward(self, x):
-        # x: [batch_size, 2, 968]
-        return self.proj(x) # [batch_size, 32, 968]
+        identity = self.skip(x)
+        x = self.act1(self.norm1(self.conv1(x)))
+        x = self.act2(self.norm2(self.conv2(x)))
+        return x + identity   # [B, 32, L]
 
 
 class DescriptorHead(nn.Module):
     """Processing descriptors for FiLM"""
-    def __init__(self, in_features=43, hidden_dim=128, out_dim=32):
+    def __init__(self, in_features=43, hidden_dim=128, out_dim=64):
         super().__init__()
         self.shared_mlp = nn.Sequential(
             nn.Linear(in_features, hidden_dim),
@@ -39,19 +48,19 @@ class DescriptorHead(nn.Module):
 
 
 class TimeEmbedding(nn.Module):
-    """Sin embed of diffussion step t"""
-    def __init__(self, base_dim=128, out_dim=32):
+    """Sin embed of diffusion step t"""
+    def __init__(self, base_dim, out_dim):
         super().__init__()
         self.base_dim = base_dim
         
-        # After sin
         self.mlp = nn.Sequential(
             nn.Linear(base_dim, out_dim),
-            nn.SiLU()
+            nn.SiLU(),
+            nn.Linear(out_dim, out_dim)
         )
 
     def forward(self, t):
-        # t: [batch_size] - tenzor with diffussion steps  (from 0 to T)
+        # t: [batch_size] 
         device = t.device
         half_dim = self.base_dim // 2
         
@@ -59,8 +68,8 @@ class TimeEmbedding(nn.Module):
         embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
         embeddings = t[:, None] * embeddings[None, :]
         
-        # Conc of sin and cos
-        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1) # [batch_size, 128]
+        # [batch_size, base_dim]
+        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1) 
         
-        t_emb = self.mlp(embeddings) # [batch_size, 32]
+        t_emb = self.mlp(embeddings) # [batch_size, out_dim]
         return t_emb
