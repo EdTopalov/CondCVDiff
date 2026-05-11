@@ -4,14 +4,20 @@ import torch.nn.functional as F
 from tqdm.auto import tqdm
 from torch import Tensor
 
-def linear_beta_schedule(timesteps: int) -> Tensor:
+def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.Tensor:
     """
-    Linear schedule 
-    Beta confirms, how much noise will be added in each step.
+    Cosine schedule as proposed in https://arxiv.org/abs/2102.09672
+    Softly adds noise so the signal structure is preserved longer.
     """
-    beta_start = 0.0001
-    beta_end = 0.02
-    return torch.linspace(beta_start, beta_end, timesteps)
+    steps = timesteps + 1
+    x = torch.linspace(0, timesteps, steps)
+    
+    alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    
+    return torch.clip(betas, 0.0001, 0.9999)
 
 def extract(a: Tensor, t: Tensor, x_shape: tuple) -> Tensor:
     """
@@ -33,7 +39,7 @@ class GaussianDiffusion(nn.Module):
         #w[:, :, 450:650] = 5.0
         #self.register_buffer('weight_mask', w)
 
-        betas = linear_beta_schedule(timesteps)
+        betas = cosine_beta_schedule(timesteps)
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas, axis=0)
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
@@ -74,64 +80,45 @@ class GaussianDiffusion(nn.Module):
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-        predicted_current = self.model(signal=x_noisy, descriptors=descriptors, t=t)
-        mask_pos = (x_start > 0).float()
-        mask_neg = (x_start < 0).float()
-        area_pos_pred = (predicted_current * mask_pos).sum(dim=-1)
-        area_pos_true = (x_start * mask_pos).sum(dim=-1)
-        area_neg_pred = (-predicted_current * mask_neg).sum(dim=-1)
-        area_neg_true = (-x_start * mask_neg).sum(dim=-1)
-        loss_area = F.mse_loss(area_pos_pred, area_pos_true) + F.mse_loss(area_neg_pred, area_neg_true)
+        predicted_signal = self.model(signal=x_noisy, descriptors=descriptors, t=t)
+        l1_err = F.l1_loss(predicted_signal, x_start, reduction="none")
+        mse_err = F.mse_loss(predicted_signal, x_start, reduction="none")
+
+        pos_mask = (x_start >= 0).float()
+        loss_pos = (l1_err + 3.0 * mse_err) * pos_mask #4 lr 0.0006
+
+        neg_mask = (x_start < 0).float()
+        neg_weight = 1.0 + 3.5 * torch.abs(x_start) #5
+        loss_neg = (l1_err * neg_weight) * neg_mask
+
+        loss_base = (loss_pos + loss_neg).mean()
+
+        diff1_pred = predicted_signal[:, :, 1:] - predicted_signal[:, :, :-1]
+        diff1_true = x_start[:, :, 1:] - x_start[:, :, :-1]
+        loss_diff1 = F.l1_loss(diff1_pred, diff1_true)
+
+        diff2_pred = diff1_pred[:, :, 1:] - diff1_pred[:, :, :-1]
+        diff2_true = diff1_true[:, :, 1:] - diff1_true[:, :, :-1]
+        loss_diff2 = F.l1_loss(diff2_pred, diff2_true)
+
+        total_loss = loss_base + 1.0 * loss_diff1 + 1.0 * loss_diff2
         
-        eps = 1e-6 # Чуть больше, чем 1e-8, для стабильности логарифма
-        
-        # Считаем площади (убедись, что они строго положительные через torch.abs)
-        area_pos_pred_abs = torch.abs(area_pos_pred) + eps
-        area_neg_pred_abs = torch.abs(area_neg_pred) + eps
-        area_pos_true_abs = torch.abs(area_pos_true) + eps
-        area_neg_true_abs = torch.abs(area_neg_true) + eps
-        
-        # Логарифмическое отношение
-        log_ratio_pred = torch.log(area_pos_pred_abs) - torch.log(area_neg_pred_abs)
-        log_ratio_true = torch.log(area_pos_true_abs) - torch.log(area_neg_true_abs)
-        
-        # MSE от логарифмов
-        loss_ratio = F.mse_loss(log_ratio_pred, log_ratio_true)
-        
-        #weight = 1.0 + 0.8 * torch.abs(x_start)
-        #mse_loss = (weight * (predicted_current - x_start)**2).mean()
-        mse_loss = F.mse_loss(predicted_current, x_start)
+        zeros = torch.tensor(0.0, device=device)
 
-        threshold = 0.5  # можно сделать настраиваемым параметром
-
-        peak_mask_pos = (x_start > threshold).float()
-        peak_mask_neg = (x_start < -threshold).float()
-        peak_mask = peak_mask_pos + peak_mask_neg  # объединённая маска
-
-        # Количество пиковых точек (для усреднения)
-        n_peak_points = peak_mask.sum(dim=-1).clamp(min=1)
-
-        # MSE только в пиковых областях (суммируем по пространству, усредняем по батчу)
-        loss_peaks = ((predicted_current - x_start) ** 2 * peak_mask).sum(dim=-1) / n_peak_points
-        loss_peaks = loss_peaks.mean() 
-        zeros = torch.tensor(0.0, device=x_start.device)
-
-        if epoch >= 10: 
-            loss_area_delay, loss_peaks_delay, loss_ratio_delay = loss_area, loss_peaks, loss_ratio
-        else:
-            loss_area_delay, loss_peaks_delay, loss_ratio_delay = zeros, zeros, zeros
-
-        weight_area  = 1e-6
-        weight_ratio = 1e-5
-        weight_peaks = 0.1
-
-        return mse_loss, zeros, zeros, zeros
+        return loss_base, zeros, zeros, zeros
 
     @torch.no_grad()
     def p_sample(self, x, descriptors, t, t_index):
         pred_x0 = self.model(signal=x, descriptors=descriptors, t=t)
+        #alpha_cumprod_t = extract(self.alphas_cumprod, t, x.shape)
+        #pred_x0 = (x - torch.sqrt(1.0 - alpha_cumprod_t) * pred_noise) / torch.sqrt(alpha_cumprod_t)
+        s = torch.amax(torch.abs(pred_x0), dim=(1, 2), keepdim=True)
+        #pred_x0.clamp_(-1.3, 1.3)
+        limit = torch.tensor(1.0, device=pred_x0.device)
+        s_scale = torch.maximum(s, limit)
 
-        #pred_x0.clamp_(-1.5, 1.5)
+        pred_x0 = pred_x0 * (limit / s_scale)
+
 
         posterior_mean_coef1 = extract(self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod), t, x.shape)
         posterior_mean_coef2 = extract((1. - self.alphas_cumprod_prev) * torch.sqrt(1. - self.betas) / (1. - self.alphas_cumprod),t, x.shape)
@@ -143,6 +130,7 @@ class GaussianDiffusion(nn.Module):
         else:
             posterior_variance_t = extract(self.posterior_variance, t, x.shape)
             noise = torch.randn_like(x)
+            temperature = 1.1
             return model_mean + torch.sqrt(posterior_variance_t) * noise
 
     @torch.no_grad()

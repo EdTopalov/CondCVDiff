@@ -57,7 +57,7 @@ class Pipeline:
         self.cur_scaler = MinMaxScaler(feature_range=(-1, 1))
         self.vol_scaler2 = MaxAbsScaler()
         self.cur_scaler2 = MaxAbsScaler()
-
+        '''
         self.train_voltage = pd.DataFrame(
             (self.vol_scaler2.fit_transform(self.train_voltage.values.reshape(-1, 1)) * 0.8).reshape(self.train_voltage.shape),
             columns=self.train_voltage.columns
@@ -66,6 +66,7 @@ class Pipeline:
             (self.cur_scaler2.fit_transform(self.train_current.values.reshape(-1, 1)) * 0.8).reshape(self.train_current.shape),
             columns=self.train_current.columns
         )
+
 
         # --- ТЕСТОВЫЕ ДАННЫЕ (transform + умножение на 0.8) ---
         if self.test_inhibitor is not None:
@@ -77,6 +78,17 @@ class Pipeline:
                 (self.cur_scaler2.transform(self.test_current.values.reshape(-1, 1)) * 0.8).reshape(self.test_current.shape),
                 columns=self.test_current.columns
             )
+        else:
+            self.test_voltage, self.test_current = None, None
+        
+        '''
+        self.train_voltage = self.train_voltage  # оставляем как есть
+        self.train_current = self.train_current
+
+        # --- ТЕСТОВЫЕ ДАННЫЕ (без нормализации) ---
+        if self.test_inhibitor is not None:
+            self.test_voltage = self.test_voltage
+            self.test_current = self.test_current
         else:
             self.test_voltage, self.test_current = None, None
 

@@ -9,7 +9,7 @@ import numpy as np
 from src.data.preprocessing.pipeline import Pipeline as P
 
 class EMA:
-    def __init__(self, model, beta=0.70):
+    def __init__(self, model, beta=0.99):
         self.beta = beta
         self.step = 0
         self.shadow = {}
@@ -59,7 +59,7 @@ def setup_optimizer(model: nn.Module, lr, weight_decay, epochs):
 
     optimizer = optim.AdamW([
         {'params': other_params, 'lr': lr, 'weight_decay': weight_decay},
-        {'params': s4_params, 'lr': 0.0006, 'weight_decay': 0.0}
+        {'params': s4_params, 'lr': 0.0005, 'weight_decay': 0.0}
     ])
 
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
@@ -195,11 +195,16 @@ class DiffusionTrainer:
                 gen_cur_norm = gen_current[0, 0, :].cpu().numpy()
                 orig_vol_norm = fixed_voltage[0, 0, :].cpu().numpy()
                 orig_cur_norm = fixed_current[0, 0, :].cpu().numpy()
-
+                
+                '''
                 gen_cur_real = self.cur_scaler.inverse_transform((gen_cur_norm / 0.8).reshape(-1, 1)).flatten()
                 orig_cur_real = self.cur_scaler.inverse_transform((orig_cur_norm / 0.8).reshape(-1, 1)).flatten()
                 orig_vol_real = self.vol_scaler.inverse_transform((orig_vol_norm / 0.8).reshape(-1, 1)).flatten()
-                
+                '''
+                gen_cur_real = gen_cur_norm
+                orig_cur_real = orig_cur_norm
+                orig_vol_real = orig_vol_norm
+
                 gen_signal_real = np.stack([orig_vol_real, gen_cur_real])
                 orig_signal_real = np.stack([orig_vol_real, orig_cur_real])
 
