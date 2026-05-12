@@ -79,13 +79,47 @@ class GaussianDiffusion(nn.Module):
         noise = torch.randn_like(x_start)
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-
+    
         predicted_signal = self.model(signal=x_noisy, descriptors=descriptors, t=t)
+        #---------------------------------------------------------
         l1_err = F.l1_loss(predicted_signal, x_start, reduction="none")
         mse_err = F.mse_loss(predicted_signal, x_start, reduction="none")
+        hybrid_err = l1_err + 2.0 * mse_err
+        peak_weight = 1.0 + 2.0 * torch.abs(x_start)
+        loss_main = hybrid_err * peak_weight
+        loss_base = loss_main.mean()
+        #---------------------------------------------------------
+        mse_err_t = F.mse_loss(predicted_signal, x_start)
 
+        # Area loss
         L = x_start.shape[-1]
+        mid_idx = L // 2
+        eps = 1e-8
+
+        pred_relu = F.relu(predicted_signal)
+        true_relu = F.relu(x_start)
+
+        area_pred_1 = torch.sum(pred_relu[:, :, :mid_idx], dim=-1)
+        area_true_1 = torch.sum(true_relu[:, :, :mid_idx], dim=-1)
         
+        area_pred_2 = torch.sum(pred_relu[:, :, mid_idx:], dim=-1)
+        area_true_2 = torch.sum(true_relu[:, :, mid_idx:], dim=-1)
+
+        loss_area = F.mse_loss(area_pred_1, area_true_1) + F.mse_loss(area_pred_2, area_true_2)
+        
+        # Peaks loss
+        indices = torch.linspace(0.0, 1.0, L, device=x_start.device).view(1, 1, -1)
+
+        com_pred_1 = torch.sum(pred_relu[:, :, :mid_idx] * indices[:, :, :mid_idx], dim=-1) / (area_pred_1 + eps)
+        com_true_1 = torch.sum(true_relu[:, :, :mid_idx] * indices[:, :, :mid_idx], dim=-1) / (area_true_1 + eps)
+        
+        com_pred_2 = torch.sum(pred_relu[:, :, mid_idx:] * indices[:, :, mid_idx:], dim=-1) / (area_pred_2 + eps)
+        com_true_2 = torch.sum(true_relu[:, :, mid_idx:] * indices[:, :, mid_idx:], dim=-1) / (area_true_2 + eps)
+        
+        loss_pos = F.l1_loss(com_pred_1, com_true_1) + F.l1_loss(com_pred_2, com_true_2)
+
+        '''
+        L = x_start.shape[-1]
         tail_mask = (torch.arange(L, device=x_start.device) >= 500).float()
         tail_mask = tail_mask.view(1, 1, -1)
         pos_mask = (x_start >= 0).float()
@@ -97,12 +131,15 @@ class GaussianDiffusion(nn.Module):
             wt = 0.0
 
         loss_tail = mse_err * tail_mask * wt
+
         loss_pos = (l1_err + 3.0 * mse_err) * pos_mask #4 lr 0.0006
         neg_weight = 1.0 + 3.5 * torch.abs(x_start) #5
         loss_neg = (l1_err * neg_weight) * neg_mask
 
-        loss_base = (loss_pos + loss_neg + loss_tail).mean()
+        loss_base = (loss_pos + loss_neg).mean()'''
+
         # ---------------------------------------------------------------------- #        
+        '''
         shift = 0.0 
 
         l1_err = F.l1_loss(predicted_signal, x_start, reduction="none")
@@ -113,6 +150,8 @@ class GaussianDiffusion(nn.Module):
         peak_weight = 1.0 + 3.0 * dev
 
         loss_main = (hybrid_err * peak_weight).mean()
+        '''
+
         '''
         diff1_pred = predicted_signal[:, :, 1:] - predicted_signal[:, :, :-1]
         diff1_true = x_start[:, :, 1:] - x_start[:, :, :-1]
@@ -125,9 +164,15 @@ class GaussianDiffusion(nn.Module):
         total_loss = loss_base + 1.0 * loss_diff1 + 1.0 * loss_diff2
         '''
         zeros = torch.tensor(0.0, device=device)
+        if epoch >= 15:
+            act = 1.0
+            act2 = 1.5
+        else:
+            act2 = 1
+            act = 0
 
-        return loss_base, zeros, zeros, zeros
-
+        #return mse_err_t * act2, loss_area * 0.00001 * act, loss_pos * 0.5 * act, zeros
+        return mse_err_t, zeros, zeros, zeros 
     @torch.no_grad()
     def p_sample(self, x, descriptors, t, t_index):
         pred_x0 = self.model(signal=x, descriptors=descriptors, t=t)
