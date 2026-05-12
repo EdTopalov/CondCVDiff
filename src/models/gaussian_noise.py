@@ -84,15 +84,25 @@ class GaussianDiffusion(nn.Module):
         l1_err = F.l1_loss(predicted_signal, x_start, reduction="none")
         mse_err = F.mse_loss(predicted_signal, x_start, reduction="none")
 
+        L = x_start.shape[-1]
+        
+        tail_mask = (torch.arange(L, device=x_start.device) >= 500).float()
+        tail_mask = tail_mask.view(1, 1, -1)
         pos_mask = (x_start >= 0).float()
-        loss_pos = (l1_err + 3.0 * mse_err) * pos_mask #4 lr 0.0006
-
         neg_mask = (x_start < 0).float()
+        
+        if epoch >= 15:
+            wt = 2.0
+        else:
+            wt = 0.0
+
+        loss_tail = mse_err * tail_mask * wt
+        loss_pos = (l1_err + 3.0 * mse_err) * pos_mask #4 lr 0.0006
         neg_weight = 1.0 + 3.5 * torch.abs(x_start) #5
         loss_neg = (l1_err * neg_weight) * neg_mask
 
-        loss_base = (loss_pos + loss_neg).mean()
-
+        loss_base = (loss_pos + loss_neg + loss_tail).mean()
+        '''
         diff1_pred = predicted_signal[:, :, 1:] - predicted_signal[:, :, :-1]
         diff1_true = x_start[:, :, 1:] - x_start[:, :, :-1]
         loss_diff1 = F.l1_loss(diff1_pred, diff1_true)
@@ -102,7 +112,7 @@ class GaussianDiffusion(nn.Module):
         loss_diff2 = F.l1_loss(diff2_pred, diff2_true)
 
         total_loss = loss_base + 1.0 * loss_diff1 + 1.0 * loss_diff2
-        
+        '''
         zeros = torch.tensor(0.0, device=device)
 
         return loss_base, zeros, zeros, zeros
