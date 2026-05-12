@@ -91,7 +91,7 @@ class GaussianDiffusion(nn.Module):
         pos_mask = (x_start >= 0).float()
         neg_mask = (x_start < 0).float()
         
-        if epoch >= 15:
+        if epoch >= 150:
             wt = 2.0
         else:
             wt = 0.0
@@ -102,6 +102,17 @@ class GaussianDiffusion(nn.Module):
         loss_neg = (l1_err * neg_weight) * neg_mask
 
         loss_base = (loss_pos + loss_neg + loss_tail).mean()
+        # ---------------------------------------------------------------------- #        
+        shift = 0.0 
+
+        l1_err = F.l1_loss(predicted_signal, x_start, reduction="none")
+        mse_err = F.mse_loss(predicted_signal, x_start, reduction="none")
+
+        hybrid_err = mse_err + 0.4 * l1_err
+        dev = torch.abs(x_start - shift)
+        peak_weight = 1.0 + 3.0 * dev
+
+        loss_main = (hybrid_err * peak_weight).mean()
         '''
         diff1_pred = predicted_signal[:, :, 1:] - predicted_signal[:, :, :-1]
         diff1_true = x_start[:, :, 1:] - x_start[:, :, :-1]
@@ -120,15 +131,17 @@ class GaussianDiffusion(nn.Module):
     @torch.no_grad()
     def p_sample(self, x, descriptors, t, t_index):
         pred_x0 = self.model(signal=x, descriptors=descriptors, t=t)
-        #alpha_cumprod_t = extract(self.alphas_cumprod, t, x.shape)
-        #pred_x0 = (x - torch.sqrt(1.0 - alpha_cumprod_t) * pred_noise) / torch.sqrt(alpha_cumprod_t)
-        s = torch.amax(torch.abs(pred_x0), dim=(1, 2), keepdim=True)
-        #pred_x0.clamp_(-1.3, 1.3)
+        
+        shift = 0.0 #new
+        
+        pred_centered = pred_x0 - shift #new
+        
+        s = torch.amax(torch.abs(pred_centered), dim=(1, 2), keepdim=True)
         limit = torch.tensor(1.0, device=pred_x0.device)
         s_scale = torch.maximum(s, limit)
 
-        pred_x0 = pred_x0 * (limit / s_scale)
-
+        pred_centered = pred_centered * (limit / s_scale)
+        pred_x0 = pred_centered + shift #new
 
         posterior_mean_coef1 = extract(self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod), t, x.shape)
         posterior_mean_coef2 = extract((1. - self.alphas_cumprod_prev) * torch.sqrt(1. - self.betas) / (1. - self.alphas_cumprod),t, x.shape)

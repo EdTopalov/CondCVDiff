@@ -82,13 +82,19 @@ class Pipeline:
             self.test_voltage, self.test_current = None, None
         
         '''
+        self.shift_constant = 0.0
+        self.mid_idx = self.train_current.shape[1] // 2
+        
+        self.train_current.iloc[:, self.mid_idx:] = self.train_current.iloc[:, self.mid_idx:] * -1.0
+
         self.train_voltage = self.train_voltage  # оставляем как есть
-        self.train_current = self.train_current
+        #self.train_current = self.train_current + self.shift_constant
 
         # --- ТЕСТОВЫЕ ДАННЫЕ (без нормализации) ---
         if self.test_inhibitor is not None:
             self.test_voltage = self.test_voltage
-            self.test_current = self.test_current
+            #self.test_current = self.test_current + self.shift_constant
+            self.test_current.iloc[:, self.mid_idx:] = self.test_current.iloc[:, self.mid_idx:] * -1.0
         else:
             self.test_voltage, self.test_current = None, None
 

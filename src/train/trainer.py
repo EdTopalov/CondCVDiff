@@ -59,14 +59,24 @@ def setup_optimizer(model: nn.Module, lr, weight_decay, epochs):
 
     optimizer = optim.AdamW([
         {'params': other_params, 'lr': lr, 'weight_decay': weight_decay},
-        {'params': s4_params, 'lr': 0.0005, 'weight_decay': 0.0}
+        {'params': s4_params, 'lr': 0.0006, 'weight_decay': 0.0}
     ])
 
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     for i, group in enumerate(optimizer.param_groups):
         print(f"Group {i}: lr={group['lr']}, weight_decay={group.get('weight_decay')}, params={sum(p.numel() for p in group['params'])}")
-
+    '''
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=[lr, 0.0005], # Пик для сверток, пик для S4
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch, # Тебе нужно передать len(train_dataloader)
+        pct_start=0.3,       # 30% времени уходит на разогрев, 70% на плавный спуск
+        anneal_strategy='cos',
+        div_factor=25.0,     # Начальный LR будет max_lr / 25
+        final_div_factor=1e4 # Финальный LR будет начальный / 10000 (для супер-деталей)
+    )'''
     return optimizer, scheduler
 
 
@@ -196,13 +206,16 @@ class DiffusionTrainer:
                 orig_vol_norm = fixed_voltage[0, 0, :].cpu().numpy()
                 orig_cur_norm = fixed_current[0, 0, :].cpu().numpy()
                 
+                mid_idx = len(gen_cur_norm) // 2
+                gen_cur_norm[mid_idx:] = gen_cur_norm[mid_idx:] * -1.0
+                orig_cur_norm[mid_idx:] = orig_cur_norm[mid_idx:] * -1.0
                 '''
                 gen_cur_real = self.cur_scaler.inverse_transform((gen_cur_norm / 0.8).reshape(-1, 1)).flatten()
                 orig_cur_real = self.cur_scaler.inverse_transform((orig_cur_norm / 0.8).reshape(-1, 1)).flatten()
                 orig_vol_real = self.vol_scaler.inverse_transform((orig_vol_norm / 0.8).reshape(-1, 1)).flatten()
                 '''
-                gen_cur_real = gen_cur_norm
-                orig_cur_real = orig_cur_norm
+                gen_cur_real = gen_cur_norm - 0.0
+                orig_cur_real = orig_cur_norm - 0.0
                 orig_vol_real = orig_vol_norm
 
                 gen_signal_real = np.stack([orig_vol_real, gen_cur_real])
