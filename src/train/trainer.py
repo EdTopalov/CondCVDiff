@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from src.utils.plots import plot_training_metrics, plot_cv_reconstruction
+from src.utils.plots2 import select_diverse_samples, plot_diverse_grid
 import numpy as np
 from src.data.preprocessing.pipeline import Pipeline as P
 
@@ -28,7 +29,6 @@ class EMA:
                 self.shadow[name] = new_average.clone()
 
     def apply_shadow(self, model):
-        """Подменяет веса модели на сглаженные (для генерации и валидации)"""
         for name, param in model.named_parameters():
             if param.requires_grad:
                 assert name in self.shadow
@@ -36,7 +36,6 @@ class EMA:
                 param.data = self.shadow[name]
 
     def restore(self, model):
-        """Возвращает дерганые веса обратно (для продолжения обучения)"""
         for name, param in model.named_parameters():
             if param.requires_grad:
                 assert name in self.backup
@@ -45,8 +44,8 @@ class EMA:
 
 def setup_optimizer(model: nn.Module, lr, weight_decay, epochs):
     """
-    Создает оптимизатор с особыми правилами для слоев S4.
-    Параметры S4 (матрицы A, B, C, dt) требуют маленького LR и нулевого Weight Decay.
+    Creates an optimizer with special rules for S4 layers.
+    S4 parameters (matrices A, B, C, dt) require a small learning rate and zero weight decay.
     """
     s4_params = []
     other_params = []
@@ -66,17 +65,7 @@ def setup_optimizer(model: nn.Module, lr, weight_decay, epochs):
 
     for i, group in enumerate(optimizer.param_groups):
         print(f"Group {i}: lr={group['lr']}, weight_decay={group.get('weight_decay')}, params={sum(p.numel() for p in group['params'])}")
-    '''
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=[lr, 0.0005], # Пик для сверток, пик для S4
-        epochs=epochs,
-        steps_per_epoch=steps_per_epoch, # Тебе нужно передать len(train_dataloader)
-        pct_start=0.3,       # 30% времени уходит на разогрев, 70% на плавный спуск
-        anneal_strategy='cos',
-        div_factor=25.0,     # Начальный LR будет max_lr / 25
-        final_div_factor=1e4 # Финальный LR будет начальный / 10000 (для супер-деталей)
-    )'''
+    
     return optimizer, scheduler
 
 
@@ -91,7 +80,8 @@ class DiffusionTrainer:
         device, 
         save_dir="./checkpoints", 
         vol_scaler=None,
-        cur_scaler=None
+        cur_scaler=None, 
+        flip_the_peak=False
     ):
         self.diffusion = diffusion_model.to(device)
         self.train_loader = train_loader
@@ -103,7 +93,7 @@ class DiffusionTrainer:
         self.vol_scaler = vol_scaler
         self.cur_scaler = cur_scaler
         self.ema = EMA(self.diffusion, beta=0.995)
-        
+        self.flip_the_peak = flip_the_peak
         os.makedirs(self.save_dir, exist_ok=True)
         self.best_val_loss = float('inf')
 
@@ -120,8 +110,10 @@ class DiffusionTrainer:
         
         for batch in pbar:
             current = batch["current"].to(self.device)  # [B, 1, 968]
+            voltage = batch["voltage"].to(self.device) 
             features = batch["features"].to(self.device) # [B, 41] (или 43)
-            
+            raw_ppm = batch["raw_ppm"].to(self.device)       
+            raw_molwt = batch["raw_molwt"].to(self.device)
             features = features + torch.randn_like(features) * 0.03
 
             if torch.rand(1).item() < 0.15:
@@ -129,7 +121,7 @@ class DiffusionTrainer:
             
             self.optimizer.zero_grad()
             
-            loss_mse, loss_area, loss_ratio, loss_peaks = self.diffusion(x_start=current, descriptors=features, epoch=epoch)
+            loss_mse, loss_area, loss_ratio, loss_peaks = self.diffusion(x_start=current, descriptors=features, epoch=epoch, voltage=voltage, raw_ppm=raw_ppm, raw_molwt=raw_molwt)
             full_loss = loss_mse + loss_area + loss_ratio + loss_peaks
             
             full_loss.backward()
@@ -160,8 +152,10 @@ class DiffusionTrainer:
         for batch in pbar:
             current = batch["current"].to(self.device)
             features = batch["features"].to(self.device)
-            
-            loss_mse_val, loss_area_val, loss_ratio_val, loss_peaks_val = self.diffusion(x_start=current, descriptors=features, epoch=epoch)
+            voltage = batch["voltage"].to(self.device)
+            raw_ppm = batch["raw_ppm"].to(self.device)      
+            raw_molwt = batch["raw_molwt"].to(self.device)
+            loss_mse_val, loss_area_val, loss_ratio_val, loss_peaks_val = self.diffusion(x_start=current, descriptors=features, epoch=epoch, voltage=voltage, raw_ppm=raw_ppm, raw_molwt=raw_molwt)
             sum_loss = loss_mse_val + loss_area_val + loss_ratio_val + loss_peaks_val
             
             total_loss += sum_loss.item()
@@ -175,10 +169,6 @@ class DiffusionTrainer:
         val_losses_history = []
         
         fixed_batch = next(iter(self.val_loader))
-        fixed_current = fixed_batch["current"][0:1].to(self.device) # 1st element of the batch, shape: [1, 1, 968]
-        fixed_voltage = fixed_batch["voltage"][0:1].to(self.device) # [1, 1, 968]
-        fixed_features = fixed_batch["features"][0:1].to(self.device)
-        
         for epoch in range(1, epochs + 1):
             
             train_loss, train_mse_loss, train_area_loss, train_ratio_loss, train_peaks_loss = self.train_epoch(epoch)
@@ -192,48 +182,50 @@ class DiffusionTrainer:
             
             if epoch % 1 == 0 or epoch == epochs:
                 self.diffusion.eval()
+                
+                num_samples = min(24, fixed_batch["current"].shape[0])
+                
+                sample_features = fixed_batch["features"][0:num_samples].to(self.device)
+                sample_current = fixed_batch["current"][0:num_samples].to(self.device)
+                sample_voltage = fixed_batch["voltage"][0:num_samples].to(self.device)
+                
                 with torch.no_grad():
-                    # generates from noise shape=(1, 2, 968)
                     gen_current = self.diffusion.sample(
-                        descriptors=fixed_features, 
-                        shape=(1, 1, fixed_current.shape[-1])
+                        descriptors=sample_features, 
+                        shape=(num_samples, 1, sample_current.shape[-1])
                     )
                 
                 plots_dir = os.path.join(self.save_dir, "plots")
                 os.makedirs(plots_dir, exist_ok=True)
                 
-                gen_cur_norm = gen_current[0, 0, :].cpu().numpy()
-                orig_vol_norm = fixed_voltage[0, 0, :].cpu().numpy()
-                orig_cur_norm = fixed_current[0, 0, :].cpu().numpy()
-                
-                mid_idx = len(gen_cur_norm) // 2
-                gen_cur_norm[mid_idx:] = gen_cur_norm[mid_idx:] * -1.0
-                orig_cur_norm[mid_idx:] = orig_cur_norm[mid_idx:] * -1.0
-                '''
-                gen_cur_real = self.cur_scaler.inverse_transform((gen_cur_norm / 0.8).reshape(-1, 1)).flatten()
-                orig_cur_real = self.cur_scaler.inverse_transform((orig_cur_norm / 0.8).reshape(-1, 1)).flatten()
-                orig_vol_real = self.vol_scaler.inverse_transform((orig_vol_norm / 0.8).reshape(-1, 1)).flatten()
-                '''
-                gen_cur_real = gen_cur_norm - 0.0
-                orig_cur_real = orig_cur_norm - 0.0
-                orig_vol_real = orig_vol_norm
-
-                gen_signal_real = np.stack([orig_vol_real, gen_cur_real])
-                orig_signal_real = np.stack([orig_vol_real, orig_cur_real])
-
                 plot_training_metrics(
                     train_losses_history, 
                     val_losses_history, 
-                    orig_signal=orig_signal_real, 
-                    gen_signal=gen_signal_real, 
+                    orig_signal=None, 
+                    gen_signal=None, 
                     save_path=os.path.join(plots_dir, f"metrics_epoch_{epoch}.png")
                 )
+
+                gen_curr_np = gen_current.squeeze(1).cpu().numpy()
+                orig_curr_np = sample_current.squeeze(1).cpu().numpy()
+                orig_volt_np = sample_voltage.squeeze(1).cpu().numpy()
                 
-                plot_cv_reconstruction(
-                    orig_signal=orig_signal_real, 
-                    gen_signal=gen_signal_real, 
-                    save_path=os.path.join(plots_dir, f"cv_curve_epoch_{epoch}.png")
+                if self.flip_the_peak:
+                    mid_idx = gen_curr_np.shape[-1] // 2
+                    gen_curr_np[:, mid_idx:] = gen_curr_np[:, mid_idx:] * -1.0
+                    orig_curr_np[:, mid_idx:] = orig_curr_np[:, mid_idx:] * -1.0
+                    
+                sel_gen_c, sel_orig_c, sel_orig_v = select_diverse_samples(
+                    gen_curr_np, orig_curr_np, orig_volt_np, num_samples=6
                 )
+                
+                cv_save_path = os.path.join(plots_dir, f"grid_cv_epoch_{epoch}.png")
+                plot_diverse_grid(sel_gen_c, sel_orig_c, sel_orig_v, 
+                                  save_path=cv_save_path, plot_type='cv')
+                
+                time_save_path = os.path.join(plots_dir, f"grid_time_epoch_{epoch}.png")
+                plot_diverse_grid(sel_gen_c, sel_orig_c, sel_orig_v, 
+                                  save_path=time_save_path, plot_type='time')
 
             current_lr = self.scheduler.get_last_lr()[0]
             print(f"Epoch {epoch} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | LR: {current_lr:.6f} | MSE_loss {train_mse_loss:.6f} | area_loss {train_area_loss:.6f} | ratio_loss {train_ratio_loss:.6f} | peaks_loss {train_peaks_loss:.6f}")

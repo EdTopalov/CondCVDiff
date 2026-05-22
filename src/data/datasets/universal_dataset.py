@@ -14,12 +14,15 @@ descriptors_name = ['MolWt', 'MolLogP', 'NumRotatableBonds', 'TPSA',
        'Translational entropy Eh', 'ppm']
 
 class CVADataset(Dataset):
-    def __init__(self, vol, cur, desc_df):
+    def __init__(self, vol, cur, desc_df, use_cycle_feat=True):
+        self.use_cycle_feat = use_cycle_feat
         v_df = vol.reset_index(drop=True)
         c_df = cur.reset_index(drop=True)
         d_df = desc_df.reset_index(drop=True)
+        
+        chem_descriptors = [d for d in descriptors_name if "Cycle" not in d]
 
-        cols_to_drop = ["Inhibitor", "Num_of_Cycle", "ppm"]
+        cols_to_drop = ["Inhibitor", "Num_of_Cycle", "ppm", "raw_ppm", "raw_MolWt"]
         v_clean = v_df.drop(columns=[c for c in cols_to_drop if c in v_df.columns])
         c_clean = c_df.drop(columns=[c for c in cols_to_drop if c in c_df.columns])
         
@@ -30,6 +33,17 @@ class CVADataset(Dataset):
         self.cur_tensor = torch.tensor(c_array, dtype=torch.float32).unsqueeze(1)
         self.desc_tensor = torch.tensor(d_df[descriptors_name].astype("float32").values, dtype=torch.float32)
 
+        self.raw_ppm = torch.tensor(d_df['raw_ppm'].astype("float32").values, dtype=torch.float32)
+        self.raw_molwt = torch.tensor(d_df['raw_MolWt'].astype("float32").values, dtype=torch.float32)
+        if self.use_cycle_feat:
+            self.cycle_tensor = torch.tensor(
+                desc_df['Num_of_Cycle_Norm'].astype("float32").values, 
+                dtype=torch.float32
+            ).unsqueeze(1)
+        else:
+            self.cycle_tensor = torch.zeros(len(desc_df), 1, dtype=torch.float32)
+
+
     def __len__(self):
         return len(self.cur_tensor)
 
@@ -37,8 +51,12 @@ class CVADataset(Dataset):
         return {
             "voltage": self.vol_tensor[idx],
             "current": self.cur_tensor[idx],
-            "features": self.desc_tensor[idx]
-        }
+            "features": self.desc_tensor[idx],
+            "cycle_num": self.cycle_tensor[idx],
+            "cycle_num": self.cycle_tensor[idx],
+            "raw_ppm": self.raw_ppm[idx],
+            "raw_molwt": self.raw_molwt[idx]
+            }
     
 
     @staticmethod

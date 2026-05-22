@@ -431,6 +431,15 @@ wheels = [
 ]
 
 [[package]]
+name = "fastdtw"
+version = "0.3.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/99/43/30f2d8db076f216b15c10db663b46e22d1750b1ebacd7af6e62b83d6ab98/fastdtw-0.3.4.tar.gz", hash = "sha256:2350fa6ec36bcad186eaf81f46eff35181baf04e324f522de8aeb43d0243f64f", size = 133402 }
+
+[[package]]
 name = "filelock"
 version = "3.25.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1698,6 +1707,7 @@ dependencies = [
     { name = "dotenv" },
     { name = "dtaidistance" },
     { name = "einops" },
+    { name = "fastdtw" },
     { name = "gluonts" },
     { name = "hydra-core" },
     { name = "ipykernel" },
@@ -1720,6 +1730,7 @@ dependencies = [
     { name = "timm" },
     { name = "tqdm" },
     { name = "transformers" },
+    { name = "tslearn" },
     { name = "wandb" },
 ]
 
@@ -1731,6 +1742,7 @@ requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "dtaidistance", specifier = ">=2.3.13" },
     { name = "einops" },
+    { name = "fastdtw", specifier = ">=0.3.4" },
     { name = "gluonts" },
     { name = "hydra-core" },
     { name = "ipykernel", specifier = ">=6.29.5" },
@@ -1753,6 +1765,7 @@ requires-dist = [
     { name = "timm", specifier = "==0.5.4" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "transformers" },
+    { name = "tslearn", specifier = ">=0.8.1" },
     { name = "wandb" },
 ]
 
@@ -1946,10 +1959,26 @@ name = "triton"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "filelock" },
+    { name = "filelock", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/c1/54fffb2eb13d293d9a429fead3646752ea190de0229bcf3d591ba2481263/triton-2.1.0-0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:919b06453f0033ea52c13eaf7833de0e57db3178d23d4e04f9fc71c4f2c32bf8", size = 89234153 },
+]
+
+[[package]]
+name = "tslearn"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "joblib" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cd/08/8447f48fe3547ca92abae6875c63a7374b14b78f3b46518e16de45be640d/tslearn-0.8.1.tar.gz", hash = "sha256:68107857404e9a3869ed452fc3b8f1f0b5fdee61a04438c7ee957ec7e928e594", size = 9602140 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5c/da/969c0efec60dcf52fb7b9ed9244a4913b2a7f0a266a0be4700cc1141471e/tslearn-0.8.1-py3-none-any.whl", hash = "sha256:2a79e1447df8c0708cfb8b06a65826ecb9b3d62e1b5b98fa26abbc77766f782d", size = 387871 },
 ]
 
 [[package]]

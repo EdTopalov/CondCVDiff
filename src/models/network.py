@@ -34,18 +34,18 @@ class DiffusionSSSD(nn.Module):
         descriptors: [B, 43] 
         t: [B] 
         """
-        h = self.signal_head(signal)              # [B, 32, 968]
+        h = self.signal_head(signal)              
         
         h += self.pos_emb_enc  
         
-        gamma, beta = self.desc_head(descriptors) # [B, 32], [B, 32]
-        t_base = self.time_head(t)                # [B, 128]
+        desc_emb = self.desc_head(descriptors) 
+        t_base = self.time_head(t)                
         
-        bottleneck_out, skip1 = self.encoder(h, gamma, beta, t_base)
+        bottleneck_out, skip1 = self.encoder(h,desc_emb, t_base)
         
-        h_dec = self.decoder(bottleneck_out, skip1, gamma, beta, t_base)
+        h_dec = self.decoder(bottleneck_out, skip1, desc_emb, t_base)
         
         h_dec = h_dec + self.pos_emb_dec
-        pred_signal = self.out_proj(h_dec)   # [B, 1, 968]
+        pred_signal = self.out_proj(h_dec) 
         
         return pred_signal

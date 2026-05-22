@@ -20,31 +20,30 @@ class SignalHead(nn.Module):
         identity = self.skip(x)
         x = self.act1(self.norm1(self.conv1(x)))
         x = self.act2(self.norm2(self.conv2(x)))
-        return x + identity   # [B, 32, L]
-
+        return x + identity
 
 class DescriptorHead(nn.Module):
-    """Processing descriptors for FiLM"""
-    def __init__(self, in_features=43, hidden_dim=128, out_dim=64):
+    """Processing descriptors (Protected against OOD explosions)"""
+    def __init__(self, in_features=41, hidden_dim=128, out_dim=64):
         super().__init__()
+        hidden_dim = out_dim * 2
+        
         self.shared_mlp = nn.Sequential(
             nn.Linear(in_features, hidden_dim),
-            nn.LeakyReLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),                
             nn.Linear(hidden_dim, hidden_dim),
-            nn.LeakyReLU()
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU()
         )
         
-        self.gamma_proj = nn.Linear(hidden_dim, out_dim)
-        self.beta_proj = nn.Linear(hidden_dim, out_dim)
+        self.desc_emb_proj = nn.Linear(hidden_dim, out_dim)
 
     def forward(self, descriptors):
-        # descriptors: [batch_size, 43]
         hidden = self.shared_mlp(descriptors)
+        decs_emb = self.desc_emb_proj(hidden)
         
-        gamma = self.gamma_proj(hidden) # [batch_size, 32]
-        beta = self.beta_proj(hidden)   # [batch_size, 32]
-        
-        return gamma, beta
+        return decs_emb
 
 
 class TimeEmbedding(nn.Module):
@@ -60,7 +59,6 @@ class TimeEmbedding(nn.Module):
         )
 
     def forward(self, t):
-        # t: [batch_size] 
         device = t.device
         half_dim = self.base_dim // 2
         
@@ -68,8 +66,7 @@ class TimeEmbedding(nn.Module):
         embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
         embeddings = t[:, None] * embeddings[None, :]
         
-        # [batch_size, base_dim]
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1) 
         
-        t_emb = self.mlp(embeddings) # [batch_size, out_dim]
+        t_emb = self.mlp(embeddings)
         return t_emb

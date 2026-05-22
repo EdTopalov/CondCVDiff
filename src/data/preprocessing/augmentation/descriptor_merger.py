@@ -34,14 +34,16 @@ class DescriptorMerger:
         and returns the merged, scaled features.
         """
         res_df = pd.DataFrame(metadata).copy()
+        res_df['raw_ppm'] = res_df['ppm'].copy()
         raw_desc = self._load_descriptors()
 
         train_inhibitors = res_df['Inhibitor'].unique()
         desc_subset = raw_desc[raw_desc['Inhibitor'].isin(train_inhibitors)].copy()
 
+        desc_subset['raw_MolWt'] = desc_subset['MolWt'].copy()
+
         if self.normalize:
-            desc_features = desc_subset.drop(columns=["Inhibitor"])
-            
+            desc_features = desc_subset.drop(columns=["Inhibitor", "raw_MolWt"])
             scaled_array = self.desc_scaler.fit_transform(desc_features)
             
             scaled_df = pd.DataFrame(
@@ -49,7 +51,7 @@ class DescriptorMerger:
                 columns=desc_features.columns, 
                 index=desc_subset.index
             )
-            desc_subset = pd.concat([desc_subset[['Inhibitor']], scaled_df], axis=1)
+            desc_subset = pd.concat([desc_subset[['Inhibitor', 'raw_MolWt']], scaled_df], axis=1)
 
             res_df['ppm'] = self.ppm_scaler.fit_transform(res_df[['ppm']]).ravel()
             self.is_fitted = True
@@ -65,13 +67,18 @@ class DescriptorMerger:
             raise ValueError("Scalers are not fitted! Call fit_transform on Train data first.")
 
         res_df = pd.DataFrame(metadata).copy()
+
+        res_df['raw_ppm'] = res_df['ppm'].copy()
+
         raw_desc = self._load_descriptors()
 
         test_inhibitors = res_df['Inhibitor'].unique()
         desc_subset = raw_desc[raw_desc['Inhibitor'].isin(test_inhibitors)].copy()
+        desc_subset['raw_MolWt'] = desc_subset['MolWt'].copy()
+        
 
         if self.normalize:
-            desc_features = desc_subset.drop(columns=["Inhibitor"])
+            desc_features = desc_subset.drop(columns=["Inhibitor", "raw_MolWt"])
             
             scaled_array = self.desc_scaler.transform(desc_features)
             
@@ -80,8 +87,8 @@ class DescriptorMerger:
                 columns=desc_features.columns, 
                 index=desc_subset.index
             )
-            desc_subset = pd.concat([desc_subset[['Inhibitor']], scaled_df], axis=1)
-
+            
+            desc_subset = pd.concat([desc_subset[['Inhibitor', 'raw_MolWt']], scaled_df], axis=1)
             res_df['ppm'] = self.ppm_scaler.transform(res_df[['ppm']]).ravel()
 
         return res_df.merge(desc_subset, how="left", on="Inhibitor")
